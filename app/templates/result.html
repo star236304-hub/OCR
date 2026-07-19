@@ -1,0 +1,36 @@
+<title>처리 결과 - PDF OCR &amp; 필기 제거</title>
+<link rel="stylesheet" href="/static/style.css">
+
+<div class="container">
+  <h1>처리 결과</h1>
+  <p class="subtitle">작업 ID: {{ job_id }}</p>
+
+  <div class="actions">
+    <a href="/download/{{ job_id }}/pdf"><button>정제된 PDF 다운로드</button></a>
+    <a href="/download/{{ job_id }}/text"><button>추출된 텍스트(.txt) 다운로드</button></a>
+  </div>
+
+  {% for page in pages %}
+    <div class="card">
+      <h3>페이지 {{ page.index }}</h3>
+      <div class="page-images">
+        <figure>
+          <img src="{{ page.original_url }}" alt="원본 페이지 {{ page.index }}">
+          <figcaption>원본</figcaption>
+        </figure>
+        <figure>
+          <img src="{{ page.mask_url }}" alt="감지된 손글씨 {{ page.index }}">
+          <figcaption>감지된 손글씨 (빨간색)</figcaption>
+        </figure>
+        <figure>
+          <img src="{{ page.cleaned_url }}" alt="정제된 페이지 {{ page.index }}">
+          <figcaption>손글씨 제거 후</figcaption>
+        </figure>
+      </div>
+      <strong>추출된 텍스트</strong>
+      <pre class="ocr-text">{{ page.text if page.text else "(인식된 텍스트가 없습니다)" }}</pre>
+    </div>
+  {% endfor %}
+
+  <a class="back-link" href="/">다른 파일 처리하기</a>
+</div>
