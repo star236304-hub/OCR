@@ -1,0 +1,12 @@
+{
+  "name": "pdf-ocr-web",
+  "private": true,
+  "type": "module",
+  "description": "Dev/test tooling for web/ (the client-side, GitHub Pages-deployable PWA). web/ itself has no build step and no dependencies - everything there loads from CDN <script> tags at runtime.",
+  "scripts": {
+    "test": "node --test webtests/*.test.mjs"
+  },
+  "devDependencies": {
+    "pngjs": "^7.0.0"
+  }
+}

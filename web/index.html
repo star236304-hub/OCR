@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PDF OCR & 필기 제거</title>
+  <meta name="description" content="PDF를 업로드하면 손글씨 표시를 지우고 인쇄된 텍스트만 OCR로 추출합니다. 서버 없이 브라우저에서 모두 처리됩니다.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="PDF OCR">
+  <meta name="theme-color" content="#2563eb">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>PDF OCR &amp; 필기 제거</h1>
+    <p class="subtitle">스캔한 PDF를 업로드하면 손글씨 표시를 지우고, 인쇄된 텍스트만 추출합니다. 모든 처리는 이 기기(브라우저) 안에서만 이루어지며 서버로 전송되지 않습니다.</p>
+
+    <p id="error" class="error"></p>
+
+    <div class="card">
+      <div id="dropzone" class="dropzone">
+        <p>PDF 파일을 선택하거나 여기로 끌어다 놓으세요</p>
+        <input id="file-input" type="file" accept="application/pdf,.pdf">
+        <p id="status" class="status"></p>
+      </div>
+    </div>
+
+    <div id="actions" class="actions" hidden>
+      <button id="download-pdf">정제된 PDF 다운로드</button>
+      <button id="download-text">추출된 텍스트(.txt) 다운로드</button>
+    </div>
+
+    <div id="results"></div>
+
+    <div class="card">
+      <strong>동작 방식</strong>
+      <ol>
+        <li>각 페이지를 이미지로 렌더링합니다 (pdf.js).</li>
+        <li>색이 있는 펜 자국과, 인쇄 글자와 달리 성글고 불규칙한 모양의 검정 잉크(손글씨)를 감지합니다.</li>
+        <li>감지된 부분을 지우고, 남은 인쇄 텍스트만 OCR로 인식합니다 (한국어 + 영어, Tesseract.js).</li>
+      </ol>
+      <p class="subtitle">※ 손글씨 감지는 규칙 기반 휴리스틱이며 완벽하지 않을 수 있습니다. 첫 실행 시 OCR 엔진(수 MB)을 내려받기 때문에 시간이 걸릴 수 있습니다.</p>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@4.2.1/dist/jspdf.umd.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,111 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --text: #1a1a1a;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --border: #e5e7eb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --card: #1f2229;
+    --text: #eaeaea;
+    --muted: #9aa1ac;
+    --border: #33363d;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1rem 4rem;
+  padding-top: max(2rem, env(safe-area-inset-top));
+}
+
+h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+p.subtitle { color: var(--muted); margin-top: 0; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 12px;
+  padding: 2.5rem 1rem;
+  text-align: center;
+  transition: border-color 0.15s ease;
+}
+.dropzone.dragover { border-color: var(--accent); }
+
+input[type="file"] {
+  margin: 1rem 0;
+  max-width: 100%;
+}
+
+.status { color: var(--muted); min-height: 1.2em; }
+
+button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 0.7rem 1.2rem;
+  font-size: 1rem;
+  cursor: pointer;
+  min-height: 44px;
+}
+button:hover { opacity: 0.9; }
+button:active { opacity: 0.8; }
+
+.error {
+  color: #dc2626;
+  min-height: 1.2em;
+}
+
+.actions { display: flex; gap: 0.75rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
+.actions button { flex: 1 1 auto; }
+
+.page-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.page-images figure { margin: 0; }
+.page-images img { width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+.page-images figcaption { font-size: 0.8rem; color: var(--muted); text-align: center; margin-top: 0.25rem; }
+
+pre.ocr-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  font-size: 0.95rem;
+  overflow-x: auto;
+}
+
+@media (max-width: 480px) {
+  .container { padding-left: 0.75rem; padding-right: 0.75rem; }
+  .card { padding: 1rem; }
+}
