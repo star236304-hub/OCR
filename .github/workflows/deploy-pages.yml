@@ -2,7 +2,7 @@ name: Deploy web/ to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, claude/pdf-ocr-handwriting-removal-hao91h]
     paths: ["web/**", ".github/workflows/deploy-pages.yml"]
   workflow_dispatch:
 
