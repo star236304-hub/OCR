@@ -1,9 +1,9 @@
-<title>PDF OCR &amp; 필기 제거</title>
+<title>PDF 필기 제거</title>
 <link rel="stylesheet" href="/static/style.css">
 
 <div class="container">
-  <h1>PDF OCR &amp; 필기 제거</h1>
-  <p class="subtitle">스캔한 PDF를 업로드하면 손글씨 표시를 지우고, 인쇄된 텍스트만 추출합니다.</p>
+  <h1>PDF 필기 제거</h1>
+  <p class="subtitle">스캔한 PDF를 업로드하면 손글씨와 펜 자국을 지웁니다.</p>
 
   {% if error %}
     <p class="error">{{ error }}</p>
@@ -26,7 +26,7 @@
     <ol>
       <li>각 페이지를 이미지로 렌더링합니다.</li>
       <li>색이 있는 펜 자국과 획 굵기가 불규칙한 손글씨 흔적을 감지합니다.</li>
-      <li>감지된 부분을 인페인팅으로 지우고, 남은 인쇄 텍스트만 OCR로 인식합니다 (한국어 + 영어).</li>
+      <li>감지된 부분을 인페인팅으로 지워, 인쇄된 내용만 남긴 PDF를 만듭니다.</li>
     </ol>
     <p class="subtitle">※ 손글씨 감지는 규칙 기반 휴리스틱이며 완벽하지 않을 수 있습니다.</p>
   </div>

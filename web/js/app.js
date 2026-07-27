@@ -1,85 +1,81 @@
-import { renderPdfToCanvases } from './pdfRender.js';
-import { detectHandwritingMask, removeHandwriting, visualizeMask } from './handwriting.js';
-import { createOcrWorker, runOcr } from './ocr.js';
-import { canvasesToPdfBlob, downloadBlob } from './pdfExport.js';
+import { loadPdf, renderPage } from './pdfRender.js';
+import { createPool } from './pool.js';
+import { encodeCanvasToJpeg, pagesToPdfBlob, downloadBlob } from './pdfExport.js';
 
 const fileInput = document.getElementById('file-input');
 const dropzone = document.getElementById('dropzone');
+const qualitySelect = document.getElementById('quality');
 const errorEl = document.getElementById('error');
-const resultsEl = document.getElementById('results');
-const actionsEl = document.getElementById('actions');
-const downloadPdfBtn = document.getElementById('download-pdf');
-const downloadTextBtn = document.getElementById('download-text');
 
 const progressEl = document.getElementById('progress');
 const progressHead = document.getElementById('progress-head');
 const statusEl = document.getElementById('status');
 const progressFill = document.getElementById('progress-fill');
 const progressDetail = document.getElementById('progress-detail');
+const cancelBtn = document.getElementById('cancel');
+
+const actionsEl = document.getElementById('actions');
+const downloadPdfBtn = document.getElementById('download-pdf');
+const summaryEl = document.getElementById('summary');
+const previewsEl = document.getElementById('previews');
 
 const lightbox = document.getElementById('lightbox');
 const lightboxImg = document.getElementById('lightbox-img');
 const lightboxClose = lightbox.querySelector('.lightbox-close');
 
-const RENDER_SHARE = 0.08; // first 8% of the bar covers PDF rendering
-const STATUS_KO = {
-  'loading tesseract core': 'OCR 엔진 로딩',
-  'initializing tesseract': 'OCR 초기화',
-  'loading language traineddata': '언어 데이터 로딩',
-  'initializing api': 'API 초기화',
-  'recognizing text': '텍스트 인식',
-};
+const QUALITY_DPI = { fast: 100, balanced: 150, high: 200 };
+const QUALITY_JPEG = { fast: 0.65, balanced: 0.72, high: 0.82 };
+// Past roughly this many pages the accumulated JPEGs start to rival what a
+// phone will hand a single tab, so we suggest the lighter preset instead of
+// letting the run die halfway through.
+const LARGE_DOC_PAGES = 200;
+const PREVIEW_PAGES = 3;
+const PREVIEW_MAX_DIM = 560;
 
-let cleanedCanvases = [];
-let allPageText = [];
+let outputPages = [];
+let running = false;
+let cancelled = false;
 
 function setError(msg) {
   errorEl.textContent = msg || '';
   errorEl.hidden = !msg;
 }
-
-function showProgress(show) {
-  progressEl.hidden = !show;
-}
-
 function setStatus(msg) {
   statusEl.textContent = msg || '';
 }
-
 function setDetail(msg) {
   progressDetail.textContent = msg || '';
 }
-
 function setProgress(fraction) {
-  const pct = Math.max(0, Math.min(1, fraction)) * 100;
-  progressFill.style.width = pct.toFixed(1) + '%';
+  progressFill.style.width = (Math.max(0, Math.min(1, fraction)) * 100).toFixed(1) + '%';
 }
 
-function canvasToImg(canvas, caption) {
-  const figure = document.createElement('figure');
-  const img = document.createElement('img');
-  img.src = canvas.toDataURL('image/png');
-  img.alt = caption;
-  img.addEventListener('click', () => openLightbox(img.src, caption));
-  const figcaption = document.createElement('figcaption');
-  figcaption.textContent = caption;
-  figure.appendChild(img);
-  figure.appendChild(figcaption);
-  return figure;
+function formatDuration(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}초`;
+  return `${Math.floor(s / 60)}분 ${String(s % 60).padStart(2, '0')}초`;
 }
 
-function cloneCanvas(source) {
-  const canvas = document.createElement('canvas');
-  canvas.width = source.width;
-  canvas.height = source.height;
-  canvas.getContext('2d').drawImage(source, 0, 0);
-  return canvas;
+/** Downscale into a small canvas so preview data URLs stay lightweight. */
+function toPreviewDataUrl(rgba, width, height) {
+  const scale = Math.min(1, PREVIEW_MAX_DIM / Math.max(width, height));
+  const full = document.createElement('canvas');
+  full.width = width;
+  full.height = height;
+  full.getContext('2d').putImageData(new ImageData(rgba, width, height), 0, 0);
+
+  if (scale >= 1) return full.toDataURL('image/jpeg', 0.85);
+
+  const small = document.createElement('canvas');
+  small.width = Math.max(1, Math.round(width * scale));
+  small.height = Math.max(1, Math.round(height * scale));
+  const ctx = small.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(full, 0, 0, small.width, small.height);
+  return small.toDataURL('image/jpeg', 0.85);
 }
 
-const COPY_ICON =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>';
-
-function makeResultCard(pageNum, originalCanvas, maskCanvas, cleanedCanvas, text) {
+function addPreviewCard(pageNum, originalUrl, overlayUrl, cleanedUrl, flagged) {
   const card = document.createElement('div');
   card.className = 'card';
 
@@ -89,55 +85,31 @@ function makeResultCard(pageNum, originalCanvas, maskCanvas, cleanedCanvas, text
   heading.textContent = `페이지 ${pageNum}`;
   const badge = document.createElement('span');
   badge.className = 'page-badge';
-  badge.textContent = 'OCR 완료';
+  badge.textContent = flagged > 0 ? `필기 ${flagged}곳 제거` : '필기 없음';
+  if (flagged === 0) badge.classList.add('neutral');
   head.append(heading, badge);
   card.appendChild(head);
 
-  const imagesRow = document.createElement('div');
-  imagesRow.className = 'page-images';
-  imagesRow.appendChild(canvasToImg(originalCanvas, '원본'));
-  imagesRow.appendChild(canvasToImg(maskCanvas, '감지된 손글씨'));
-  imagesRow.appendChild(canvasToImg(cleanedCanvas, '손글씨 제거 후'));
-  card.appendChild(imagesRow);
-
-  const textHead = document.createElement('div');
-  textHead.className = 'text-head';
-  const label = document.createElement('strong');
-  label.textContent = '추출된 텍스트';
-  const copyBtn = document.createElement('button');
-  copyBtn.type = 'button';
-  copyBtn.className = 'copy-btn';
-  copyBtn.innerHTML = COPY_ICON + '<span>복사</span>';
-  textHead.append(label, copyBtn);
-  card.appendChild(textHead);
-
-  const pre = document.createElement('pre');
-  pre.className = 'ocr-text';
-  if (text) {
-    pre.textContent = text;
-  } else {
-    pre.textContent = '(인식된 텍스트가 없습니다)';
-    pre.classList.add('empty');
-    copyBtn.disabled = true;
-    copyBtn.style.display = 'none';
-  }
-
-  copyBtn.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      copyBtn.classList.add('copied');
-      copyBtn.querySelector('span').textContent = '복사됨';
-      setTimeout(() => {
-        copyBtn.classList.remove('copied');
-        copyBtn.querySelector('span').textContent = '복사';
-      }, 1500);
-    } catch {
-      /* clipboard may be unavailable (e.g. non-secure context) */
-    }
+  const row = document.createElement('div');
+  row.className = 'page-images';
+  [
+    [originalUrl, '원본'],
+    [overlayUrl, '감지된 필기'],
+    [cleanedUrl, '제거 후'],
+  ].forEach(([src, caption]) => {
+    const figure = document.createElement('figure');
+    const img = document.createElement('img');
+    img.src = src;
+    img.alt = caption;
+    img.loading = 'lazy';
+    img.addEventListener('click', () => openLightbox(src, caption));
+    const cap = document.createElement('figcaption');
+    cap.textContent = caption;
+    figure.append(img, cap);
+    row.appendChild(figure);
   });
-
-  card.appendChild(pre);
-  return card;
+  card.appendChild(row);
+  previewsEl.appendChild(card);
 }
 
 function openLightbox(src, alt) {
@@ -157,91 +129,167 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !lightbox.hidden) closeLightbox();
 });
 
+/**
+ * Run `task` over page indices 0..total-1 across `laneCount` concurrent
+ * lanes. Each lane pulls the next page when it finishes one, so a slow page
+ * never stalls the others.
+ */
+async function runLanes(total, laneCount, task) {
+  let next = 0;
+  const lanes = [];
+  for (let lane = 0; lane < laneCount; lane++) {
+    lanes.push(
+      (async () => {
+        for (;;) {
+          const index = next++;
+          if (index >= total || cancelled) return;
+          await task(index, lane);
+        }
+      })()
+    );
+  }
+  await Promise.all(lanes);
+}
+
 async function processFile(file) {
+  if (running) return;
+
   setError('');
-  resultsEl.innerHTML = '';
+  previewsEl.innerHTML = '';
+  summaryEl.textContent = '';
   actionsEl.hidden = true;
-  cleanedCanvases = [];
-  allPageText = [];
+  outputPages = [];
+  cancelled = false;
+  running = true;
 
   if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
     setError('PDF 파일만 업로드할 수 있습니다.');
+    running = false;
     return;
   }
 
-  showProgress(true);
+  progressEl.hidden = false;
   progressHead.classList.remove('done');
+  cancelBtn.hidden = false;
   setProgress(0);
   setStatus('PDF를 여는 중…');
   setDetail(file.name);
 
+  const pool = createPool();
+  let pdf = null;
+  const startedAt = performance.now();
+
   try {
     const arrayBuffer = await file.arrayBuffer();
-    const pageCanvases = await renderPdfToCanvases(arrayBuffer);
-
-    if (pageCanvases.length === 0) {
+    pdf = await loadPdf(arrayBuffer);
+    const total = pdf.numPages;
+    if (total === 0) {
       setError('PDF에서 페이지를 찾을 수 없습니다.');
-      showProgress(false);
+      progressEl.hidden = true;
       return;
     }
-    setProgress(RENDER_SHARE);
 
-    const totalPages = pageCanvases.length;
-    let pageBase = RENDER_SHARE;
-    let pageSpan = (1 - RENDER_SHARE) / totalPages;
+    const dpi = QUALITY_DPI[qualitySelect.value] || QUALITY_DPI.balanced;
+    const jpegQuality = QUALITY_JPEG[qualitySelect.value] || QUALITY_JPEG.balanced;
+    if (total > LARGE_DOC_PAGES && qualitySelect.value !== 'fast') {
+      setError(
+        `${total}페이지 문서입니다. 메모리가 부족해 중단될 수 있으니, 문제가 생기면 해상도를 "빠르게"로 낮춰 다시 시도해 보세요.`
+      );
+    }
+    const laneCount = pool.size;
+    const canvases = Array.from({ length: laneCount }, () => document.createElement('canvas'));
+    const previews = [];
 
-    setStatus('OCR 엔진 준비 중…');
-    setDetail('처음 실행 시 엔진(수 MB)을 내려받습니다.');
-    const worker = await createOcrWorker('kor+eng', (m) => {
-      if (!m || !m.status) return;
-      const ko = STATUS_KO[m.status] || m.status;
-      const pctText = typeof m.progress === 'number' ? ` ${Math.round(m.progress * 100)}%` : '';
-      setDetail(ko + pctText);
-      if (m.status === 'recognizing text' && typeof m.progress === 'number') {
-        setProgress(pageBase + pageSpan * m.progress);
+    outputPages = new Array(total);
+    let done = 0;
+    let totalFlagged = 0;
+
+    setStatus(`0 / ${total} 페이지`);
+    setDetail(
+      `${pool.usingWorkers ? `${laneCount}개 스레드로 병렬 처리` : '단일 스레드로 처리'} · ${qualitySelect.selectedOptions[0].text}`
+    );
+
+    await runLanes(total, laneCount, async (index, lane) => {
+      const pageNum = index + 1;
+      const canvas = canvases[lane];
+      const { width, height } = await renderPage(pdf, pageNum, { dpi }, canvas);
+      if (cancelled) return;
+
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const imageData = ctx.getImageData(0, 0, width, height);
+      const wantPreview = index < PREVIEW_PAGES;
+
+      const result = await pool
+        .lane(lane)
+        .process(imageData.data.buffer, width, height, {}, wantPreview);
+      if (cancelled) return;
+
+      const cleaned = new Uint8ClampedArray(result.buffer);
+      ctx.putImageData(new ImageData(cleaned, width, height), 0, 0);
+      outputPages[index] = { bytes: await encodeCanvasToJpeg(canvas, jpegQuality), width, height };
+      totalFlagged += result.flagged || 0;
+
+      if (wantPreview && result.originalBuffer && result.overlayBuffer) {
+        previews.push({
+          pageNum,
+          flagged: result.flagged || 0,
+          originalUrl: toPreviewDataUrl(new Uint8ClampedArray(result.originalBuffer), width, height),
+          overlayUrl: toPreviewDataUrl(new Uint8ClampedArray(result.overlayBuffer), width, height),
+          cleanedUrl: toPreviewDataUrl(cleaned, width, height),
+        });
       }
+
+      done++;
+      const elapsed = performance.now() - startedAt;
+      const remaining = (elapsed / done) * (total - done);
+      setProgress(done / total);
+      setStatus(`${done} / ${total} 페이지`);
+      setDetail(
+        done < total
+          ? `남은 시간 약 ${formatDuration(remaining)} · 페이지당 ${Math.round(elapsed / done)}ms`
+          : 'PDF를 만드는 중…'
+      );
     });
 
-    for (let i = 0; i < totalPages; i++) {
-      const pageNum = i + 1;
-      pageBase = RENDER_SHARE + (1 - RENDER_SHARE) * (i / totalPages);
-      setProgress(pageBase);
-      setStatus(`페이지 ${pageNum} / ${totalPages} 처리 중…`);
-      setDetail('손글씨 감지 중…');
-
-      const canvas = pageCanvases[i];
-      const ctx = canvas.getContext('2d');
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-      const mask = detectHandwritingMask(imageData.data, canvas.width, canvas.height);
-      const cleanedData = removeHandwriting(imageData.data, mask, canvas.width, canvas.height);
-      const maskOverlayData = visualizeMask(imageData.data, mask, canvas.width, canvas.height);
-
-      const cleanedCanvas = cloneCanvas(canvas);
-      cleanedCanvas.getContext('2d').putImageData(new ImageData(cleanedData, canvas.width, canvas.height), 0, 0);
-      const maskCanvas = cloneCanvas(canvas);
-      maskCanvas.getContext('2d').putImageData(new ImageData(maskOverlayData, canvas.width, canvas.height), 0, 0);
-
-      const { text } = await runOcr(worker, cleanedCanvas);
-      setProgress(pageBase + pageSpan);
-
-      cleanedCanvases.push(cleanedCanvas);
-      allPageText.push(text);
-      resultsEl.appendChild(makeResultCard(pageNum, canvas, maskCanvas, cleanedCanvas, text));
+    if (cancelled) {
+      setStatus('취소되었습니다.');
+      setDetail(`${done} / ${total} 페이지까지 처리됨`);
+      cancelBtn.hidden = true;
+      return;
     }
 
-    await worker.terminate();
+    previews
+      .sort((a, b) => a.pageNum - b.pageNum)
+      .forEach((p) => addPreviewCard(p.pageNum, p.originalUrl, p.overlayUrl, p.cleanedUrl, p.flagged));
+
+    const elapsed = performance.now() - startedAt;
     setProgress(1);
     progressHead.classList.add('done');
+    cancelBtn.hidden = true;
+    setStatus(`완료 · ${total}페이지`);
+    setDetail(`${formatDuration(elapsed)} 소요 · 페이지당 ${Math.round(elapsed / total)}ms`);
+    summaryEl.textContent =
+      totalFlagged > 0
+        ? `총 ${total}페이지에서 필기 ${totalFlagged}곳을 제거했습니다.` +
+          (total > PREVIEW_PAGES ? ` 아래는 처음 ${PREVIEW_PAGES}페이지 미리보기입니다.` : '')
+        : `총 ${total}페이지를 확인했지만 제거할 필기를 찾지 못했습니다.`;
     actionsEl.hidden = false;
-    setStatus(`완료: 총 ${totalPages}페이지 처리됨`);
-    setDetail('아래에서 결과를 확인하고 내려받으세요.');
   } catch (err) {
     console.error(err);
     setError('처리 중 오류가 발생했습니다: ' + (err && err.message ? err.message : String(err)));
-    showProgress(false);
+    progressEl.hidden = true;
+  } finally {
+    pool.terminate();
+    if (pdf) pdf.destroy().catch(() => {});
+    running = false;
+    fileInput.value = '';
   }
 }
+
+cancelBtn.addEventListener('click', () => {
+  cancelled = true;
+  setStatus('취소하는 중…');
+});
 
 fileInput.addEventListener('change', () => {
   if (fileInput.files.length > 0) processFile(fileInput.files[0]);
@@ -265,15 +313,20 @@ dropzone.addEventListener('drop', (e) => {
 });
 
 downloadPdfBtn.addEventListener('click', () => {
-  if (!cleanedCanvases.length) return;
-  const blob = canvasesToPdfBlob(cleanedCanvases);
-  downloadBlob(blob, 'cleaned.pdf');
-});
-
-downloadTextBtn.addEventListener('click', () => {
-  if (!allPageText.length) return;
-  const blob = new Blob([allPageText.join('\n\n')], { type: 'text/plain;charset=utf-8' });
-  downloadBlob(blob, 'extracted_text.txt');
+  const pages = outputPages.filter(Boolean);
+  if (!pages.length) return;
+  downloadPdfBtn.disabled = true;
+  // Assembling a few hundred pages blocks briefly; let the label repaint.
+  setTimeout(() => {
+    try {
+      downloadBlob(pagesToPdfBlob(pages), 'cleaned.pdf');
+    } catch (err) {
+      console.error(err);
+      setError('PDF를 만드는 중 오류가 발생했습니다: ' + (err && err.message ? err.message : String(err)));
+    } finally {
+      downloadPdfBtn.disabled = false;
+    }
+  }, 30);
 });
 
 if ('serviceWorker' in navigator) {

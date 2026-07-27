@@ -1,17 +1,18 @@
-// App-shell cache so the PWA can launch offline once installed. OCR/PDF
+// App-shell cache so the PWA can launch offline once installed. The PDF
 // library requests (cross-origin, from jsdelivr) are cached opportunistically
 // on first use so repeat visits work offline too, but the very first run
 // needs network access to fetch them.
-const CACHE_NAME = 'pdf-ocr-shell-v2';
+const CACHE_NAME = 'pdf-ocr-shell-v3';
 const APP_SHELL = [
   './',
   './index.html',
   './css/style.css',
   './js/app.js',
+  './js/pool.js',
+  './js/worker.js',
   './js/pdfRender.js',
   './js/handwriting.js',
   './js/imageProc.js',
-  './js/ocr.js',
   './js/pdfExport.js',
   './manifest.webmanifest',
   './icons/icon-192.png',

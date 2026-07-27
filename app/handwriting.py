@@ -14,11 +14,15 @@ work well in practice for scanned/annotated documents:
    stroke-width coefficient of variation and solidity fall outside the
    printed-text range are flagged as handwriting.
 
-Both signals produce a single binary mask that is used both to inpaint the
-image (visual removal) and to drop overlapping words from the OCR output
-(text-level removal), so detection only has to happen once.
+Both signals produce a single binary mask, which is then inpainted over to
+erase the handwriting.
 
 Tune the thresholds below if a particular document set behaves differently.
+
+Note that the browser build (web/js/handwriting.js) uses a different, better
+-tuned classifier - extent and circularity per component, plus a run-length
+test that protects printed rules and table borders - and is the version that
+receives ongoing work.
 """
 
 import cv2

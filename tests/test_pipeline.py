@@ -2,10 +2,9 @@
 
 import cv2
 import numpy as np
-import pytest
 from PIL import Image, ImageDraw, ImageFont
 
-from app import handwriting, ocr, pdf_utils
+from app import handwriting, pdf_utils, pipeline
 
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
@@ -35,7 +34,7 @@ def test_handwriting_mask_flags_colored_scribble_not_printed_text():
     assert mask[40:90, 40:400].sum() == 0
 
 
-def test_remove_handwriting_erases_scribble_and_keeps_text_ocrable():
+def test_remove_handwriting_erases_scribble_and_keeps_printed_text():
     img = _synthetic_page()
     mask = handwriting.detect_handwriting_mask(img)
     cleaned = handwriting.remove_handwriting(img, mask)
@@ -45,8 +44,15 @@ def test_remove_handwriting_erases_scribble_and_keeps_text_ocrable():
     red_pixels = np.sum((region[..., 2] > 150) & (region[..., 1] < 100))
     assert red_pixels == 0
 
-    text, _ = ocr.run_ocr(cleaned, lang="eng")
-    assert "HELLO" in text.upper()
+    # The printed line is untouched.
+    assert np.array_equal(cleaned[40:90, 40:400], img[40:90, 40:400])
+
+
+def test_process_pdf_returns_cleaned_pages():
+    pdf_bytes = pdf_utils.images_to_pdf([_synthetic_page()])
+    pages = pipeline.process_pdf(pdf_bytes, dpi=150)
+    assert len(pages) == 1
+    assert set(pages[0]) == {"original", "cleaned", "mask_overlay"}
 
 
 def test_images_to_pdf_and_back_roundtrip():

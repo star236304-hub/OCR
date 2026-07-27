@@ -1,4 +1,4 @@
-<title>처리 결과 - PDF OCR &amp; 필기 제거</title>
+<title>처리 결과 - PDF 필기 제거</title>
 <link rel="stylesheet" href="/static/style.css">
 
 <div class="container">
@@ -7,7 +7,6 @@
 
   <div class="actions">
     <a href="/download/{{ job_id }}/pdf"><button>정제된 PDF 다운로드</button></a>
-    <a href="/download/{{ job_id }}/text"><button>추출된 텍스트(.txt) 다운로드</button></a>
   </div>
 
   {% for page in pages %}
@@ -27,8 +26,6 @@
           <figcaption>손글씨 제거 후</figcaption>
         </figure>
       </div>
-      <strong>추출된 텍스트</strong>
-      <pre class="ocr-text">{{ page.text if page.text else "(인식된 텍스트가 없습니다)" }}</pre>
     </div>
   {% endfor %}
 

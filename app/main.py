@@ -1,4 +1,4 @@
-"""Web app: upload a PDF, get back handwriting-cleaned pages + OCR text."""
+"""Web app: upload a PDF, get back handwriting-cleaned pages."""
 
 import re
 import uuid
@@ -18,7 +18,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
-app = FastAPI(title="PDF OCR & 필기 제거")
+app = FastAPI(title="PDF 필기 제거")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.mount("/jobs", StaticFiles(directory=str(DATA_DIR)), name="jobs")
@@ -63,25 +63,20 @@ async def process(request: Request, file: UploadFile = File(...)):
 
     page_infos = []
     cleaned_images = []
-    all_text = []
     for idx, page in enumerate(pages, start=1):
         cv2.imwrite(str(job_dir / f"page_{idx}_original.png"), page["original"])
         cv2.imwrite(str(job_dir / f"page_{idx}_cleaned.png"), page["cleaned"])
         cv2.imwrite(str(job_dir / f"page_{idx}_mask.png"), page["mask_overlay"])
         cleaned_images.append(page["cleaned"])
-        all_text.append(page["text"])
         page_infos.append(
             {
                 "index": idx,
                 "original_url": f"/jobs/{job_id}/page_{idx}_original.png",
                 "cleaned_url": f"/jobs/{job_id}/page_{idx}_cleaned.png",
                 "mask_url": f"/jobs/{job_id}/page_{idx}_mask.png",
-                "text": page["text"],
             }
         )
 
-    full_text = "\n\n".join(all_text)
-    (job_dir / "extracted_text.txt").write_text(full_text, encoding="utf-8")
     (job_dir / "cleaned.pdf").write_bytes(pdf_utils.images_to_pdf(cleaned_images))
 
     return templates.TemplateResponse(
@@ -92,14 +87,6 @@ async def process(request: Request, file: UploadFile = File(...)):
             "pages": page_infos,
         },
     )
-
-
-@app.get("/download/{job_id}/text")
-def download_text(job_id: str):
-    path = _job_dir(job_id) / "extracted_text.txt"
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
-    return FileResponse(path, filename="extracted_text.txt", media_type="text/plain")
 
 
 @app.get("/download/{job_id}/pdf")
