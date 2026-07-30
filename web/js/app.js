@@ -1,9 +1,11 @@
 import { loadPdf, renderPage } from './pdfRender.js';
 import { createPool } from './pool.js';
 import { encodeCanvasToJpeg, pagesToPdfBlob, downloadBlob } from './pdfExport.js';
+import { inspectAnnotations, stripAnnotations } from './annotations.js';
 
 const fileInput = document.getElementById('file-input');
 const dropzone = document.getElementById('dropzone');
+const modeSelect = document.getElementById('mode');
 const qualitySelect = document.getElementById('quality');
 const errorEl = document.getElementById('error');
 
@@ -33,6 +35,7 @@ const PREVIEW_PAGES = 3;
 const PREVIEW_MAX_DIM = 560;
 
 let outputPages = [];
+let annotationResult = null;
 let running = false;
 let cancelled = false;
 
@@ -48,6 +51,30 @@ function setDetail(msg) {
 }
 function setProgress(fraction) {
   progressFill.style.width = (Math.max(0, Math.min(1, fraction)) * 100).toFixed(1) + '%';
+}
+
+const SUBTYPE_KO = {
+  Ink: '펜 획',
+  Highlight: '형광펜',
+  Underline: '밑줄',
+  StrikeOut: '취소선',
+  Squiggly: '물결 밑줄',
+  FreeText: '텍스트 상자',
+  Text: '메모',
+  Square: '사각형',
+  Circle: '원',
+  Line: '직선',
+  Polygon: '다각형',
+  PolyLine: '연결선',
+  Caret: '삽입 표시',
+  Stamp: '스탬프',
+};
+
+function describeSubtypes(bySubtype) {
+  return Object.entries(bySubtype)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => `${SUBTYPE_KO[name] || name} ${count}개`)
+    .join(', ');
 }
 
 function formatDuration(ms) {
@@ -159,6 +186,7 @@ async function processFile(file) {
   summaryEl.textContent = '';
   actionsEl.hidden = true;
   outputPages = [];
+  annotationResult = null;
   cancelled = false;
   running = true;
 
@@ -181,6 +209,36 @@ async function processFile(file) {
 
   try {
     const arrayBuffer = await file.arrayBuffer();
+
+    // Handwriting added in a PDF app (iPad markup and friends) is stored as
+    // annotation objects. Deleting those is exact and keeps the page's real
+    // text, so it always beats rasterising - take that path when it applies.
+    if (modeSelect.value !== 'raster') {
+      setStatus('필기 주석을 확인하는 중…');
+      const found = await inspectAnnotations(arrayBuffer.slice(0));
+      if (found.total > 0) {
+        setStatus('필기 주석을 제거하는 중…');
+        setProgress(0.4);
+        const stripped = await stripAnnotations(arrayBuffer.slice(0));
+        setProgress(1);
+        annotationResult = stripped;
+        progressHead.classList.add('done');
+        cancelBtn.hidden = true;
+        setStatus(`완료 · 필기 주석 ${stripped.removed}개 제거`);
+        setDetail(`${stripped.pages}개 페이지 · 원본 텍스트와 화질을 그대로 유지했습니다.`);
+        summaryEl.textContent =
+          `이 PDF는 앱에서 필기한 파일이라 주석을 직접 지웠습니다 (${describeSubtypes(found.bySubtype)}). ` +
+          '페이지를 이미지로 바꾸지 않았기 때문에 글자는 그대로 선택·검색할 수 있습니다.';
+        actionsEl.hidden = false;
+        return;
+      }
+      if (modeSelect.value === 'annotations') {
+        setError('이 PDF에는 지울 수 있는 필기 주석이 없습니다. 스캔한 문서라면 "이미지 처리"를 선택하세요.');
+        progressEl.hidden = true;
+        return;
+      }
+    }
+
     pdf = await loadPdf(arrayBuffer);
     const total = pdf.numPages;
     if (total === 0) {
@@ -313,6 +371,10 @@ dropzone.addEventListener('drop', (e) => {
 });
 
 downloadPdfBtn.addEventListener('click', () => {
+  if (annotationResult) {
+    downloadBlob(new Blob([annotationResult.bytes], { type: 'application/pdf' }), 'cleaned.pdf');
+    return;
+  }
   const pages = outputPages.filter(Boolean);
   if (!pages.length) return;
   downloadPdfBtn.disabled = true;

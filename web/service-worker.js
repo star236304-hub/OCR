@@ -2,13 +2,14 @@
 // library requests (cross-origin, from jsdelivr) are cached opportunistically
 // on first use so repeat visits work offline too, but the very first run
 // needs network access to fetch them.
-const CACHE_NAME = 'pdf-ocr-shell-v3';
+const CACHE_NAME = 'pdf-ocr-shell-v4';
 const APP_SHELL = [
   './',
   './index.html',
   './css/style.css',
   './js/app.js',
   './js/pool.js',
+  './js/annotations.js',
   './js/worker.js',
   './js/pdfRender.js',
   './js/handwriting.js',

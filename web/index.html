@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>PDF 필기 제거</title>
-  <meta name="description" content="PDF에서 손글씨·펜 자국을 지웁니다. 서버 없이 브라우저에서 모두 처리되며, 수백 페이지 문서도 빠르게 처리합니다.">
+  <meta name="description" content="PDF에서 손글씨·펜 자국을 지웁니다. 아이패드 등 앱에서 필기한 PDF는 주석만 지워 원본 화질과 글자를 보존하고, 스캔 문서는 이미지 분석으로 처리합니다. 서버 없이 브라우저에서 모두 처리됩니다.">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -25,7 +25,7 @@
       </div>
       <div class="app-title">
         <h1>PDF 필기 제거</h1>
-        <p class="subtitle">스캔한 문서에서 손글씨와 펜 자국만 지웁니다.</p>
+        <p class="subtitle">앱에서 필기한 PDF도, 스캔한 종이 문서도 필기만 지웁니다.</p>
       </div>
     </header>
 
@@ -53,14 +53,23 @@
     </label>
 
     <div class="option-row">
+      <label for="mode">처리 방식</label>
+      <select id="mode">
+        <option value="auto" selected>자동</option>
+        <option value="annotations">앱 필기(주석)만</option>
+        <option value="raster">스캔 문서(이미지 처리)</option>
+      </select>
       <label for="quality">해상도</label>
       <select id="quality">
         <option value="fast">빠르게 · 100dpi</option>
         <option value="balanced" selected>표준 · 150dpi</option>
         <option value="high">고품질 · 200dpi</option>
       </select>
-      <span class="option-hint">낮을수록 빠릅니다</span>
     </div>
+    <p class="option-hint">
+      아이패드 등 앱에서 필기한 PDF는 주석만 지워 원본 화질과 글자를 그대로 보존합니다.
+      스캔한 종이 문서는 이미지 처리로 넘어가며, 해상도가 낮을수록 빠릅니다.
+    </p>
 
     <section id="progress" class="progress-card" hidden aria-live="polite">
       <div id="progress-head" class="progress-head">
@@ -91,18 +100,26 @@
 
     <details class="how-it-works">
       <summary>동작 방식과 참고 사항</summary>
-      <ol>
-        <li>각 페이지를 이미지로 렌더링합니다 <span class="muted">(pdf.js)</span>.</li>
-        <li>잉크 덩어리를 하나씩 분석해, 인쇄된 글자·표선과 펜으로 쓴 자국을 모양과 색으로 구분합니다.</li>
-        <li>펜 자국으로 판정된 부분만 주변 배경색으로 메워 지웁니다.</li>
-      </ol>
       <p class="muted small">
-        처리는 여러 스레드에서 동시에 진행되며, 페이지는 한 장씩 처리한 뒤 곧바로 메모리에서 해제됩니다.
-        덕분에 수백 페이지 문서도 기기 메모리를 넘지 않고 처리할 수 있습니다.
+        <strong>앱에서 필기한 PDF</strong> — 아이패드 마크업, 굿노트, PDF Expert 등에서 쓴 필기는 PDF 안에
+        주석 객체로 저장됩니다. 이 경우 해당 객체만 삭제하므로 추측이 전혀 없고, 페이지를 이미지로 바꾸지
+        않아 글자는 그대로 선택·검색할 수 있으며 화질도 원본 그대로입니다.
       </p>
       <p class="muted small">
-        ※ 필기 감지는 규칙 기반 휴리스틱이며 완벽하지 않습니다. 인쇄 글자와 겹쳐 있거나 인쇄체에 가까운
-        또박또박한 글씨는 남을 수 있고, 반대로 손으로 그은 밑줄은 표선으로 판단해 남길 수 있습니다.
+        <strong>스캔한 종이 문서</strong> — 구조가 없으므로 픽셀을 분석합니다. 잉크 덩어리를 하나씩 떼어
+        내어 인쇄물인지 펜 자국인지 판단합니다. 인쇄된 글자는 자기 상자를 촘촘히 채우고, 표선은 곧은 직선
+        한 줄이며, 도형·그래프는 굵기가 일정합니다. 반대로 펜 자국은 성글게 휘저으며 굵기가 들쭉날쭉합니다.
+        판정된 부분만 주변 종이색으로 메워 지웁니다.
+      </p>
+      <p class="muted small">
+        페이지는 여러 스레드에서 동시에, 한 장씩 처리한 뒤 곧바로 메모리에서 해제됩니다. 덕분에 수백 페이지
+        문서도 기기 메모리를 넘지 않습니다.
+      </p>
+      <p class="muted small">
+        ※ 이미지 처리는 규칙 기반 휴리스틱이라 완벽하지 않습니다. 인쇄된 글자·표·도형을 잘못 지우지 않는
+        쪽을 우선하도록 맞췄기 때문에, 굵기가 일정한 검정 필기나 작은 손글씨 몇 글자는 남을 수 있습니다.
+        색이 있는 펜 자국은 이 한계와 무관하게 안정적으로 지워집니다. 앱에서 필기한 PDF를 "내보내기"하며
+        병합(flatten)한 경우에도 주석이 사라져 이미지 처리로 넘어갑니다.
       </p>
     </details>
   </main>

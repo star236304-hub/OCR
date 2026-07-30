@@ -102,19 +102,82 @@ export function computeRunLengths(ink, width, height, hRun, vRun) {
     }
   }
 
-  for (let x = 0; x < width; x++) {
-    let y = 0;
-    while (y < height) {
-      const idx = y * width + x;
+  // Vertical runs are computed as two row-major sweeps rather than by
+  // walking each column: a column-major traversal touches a new cache line
+  // on every single pixel, and on a multi-megapixel page that dominated the
+  // whole detection stage. `column` holds the run length carried between
+  // adjacent rows and is only `width` entries wide.
+  const column = new Uint16Array(width);
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      const idx = row + x;
+      const up = ink[idx] !== 0 ? column[x] + 1 : 0;
+      column[x] = up;
+      vRun[idx] = up;
+    }
+  }
+  column.fill(0);
+  for (let y = height - 1; y >= 0; y--) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      const idx = row + x;
       if (ink[idx] === 0) {
+        column[x] = 0;
         vRun[idx] = 0;
-        y++;
         continue;
       }
-      const start = y;
-      while (y < height && ink[y * width + x] !== 0) y++;
-      const len = y - start;
-      for (let k = start; k < y; k++) vRun[k * width + x] = len;
+      const down = column[x] + 1;
+      column[x] = down;
+      // vRun currently holds the run length ending here from above.
+      vRun[idx] = vRun[idx] + down - 1;
+    }
+  }
+}
+
+/**
+ * Chamfer (3-4) distance transform of the ink mask: for every ink pixel,
+ * roughly 3x its distance to the nearest background pixel. Two passes, all
+ * integer arithmetic.
+ *
+ * On the ridge of a stroke this value is 3x the local half-width, which is
+ * what separates a printed shape from a drawn one: printing lays down a
+ * constant stroke width, while a pen varies with pressure and speed.
+ */
+export function chamferDistanceTransform(ink, width, height, dist) {
+  const INF = 65000;
+  const n = width * height;
+  for (let i = 0; i < n; i++) dist[i] = ink[i] !== 0 ? INF : 0;
+
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      const idx = row + x;
+      if (dist[idx] === 0) continue;
+      let best = dist[idx];
+      if (x > 0 && dist[idx - 1] + 3 < best) best = dist[idx - 1] + 3;
+      if (y > 0) {
+        if (dist[idx - width] + 3 < best) best = dist[idx - width] + 3;
+        if (x > 0 && dist[idx - width - 1] + 4 < best) best = dist[idx - width - 1] + 4;
+        if (x < width - 1 && dist[idx - width + 1] + 4 < best) best = dist[idx - width + 1] + 4;
+      }
+      dist[idx] = best;
+    }
+  }
+
+  for (let y = height - 1; y >= 0; y--) {
+    const row = y * width;
+    for (let x = width - 1; x >= 0; x--) {
+      const idx = row + x;
+      if (dist[idx] === 0) continue;
+      let best = dist[idx];
+      if (x < width - 1 && dist[idx + 1] + 3 < best) best = dist[idx + 1] + 3;
+      if (y < height - 1) {
+        if (dist[idx + width] + 3 < best) best = dist[idx + width] + 3;
+        if (x < width - 1 && dist[idx + width + 1] + 4 < best) best = dist[idx + width + 1] + 4;
+        if (x > 0 && dist[idx + width - 1] + 4 < best) best = dist[idx + width - 1] + 4;
+      }
+      dist[idx] = best;
     }
   }
 }
@@ -122,7 +185,8 @@ export function computeRunLengths(ink, width, height, hRun, vRun) {
 /**
  * 8-connected component labeling over `ink`, computing every statistic the
  * classifier needs in the same traversal (area, bbox, boundary-pixel count,
- * colored-pixel count, longest axis-aligned runs).
+ * colored-pixel count, longest axis-aligned runs, and stroke-width samples
+ * taken along each stroke's ridge).
  *
  * Rather than storing a full Int32 label image (~9MB/page), each component
  * records only its seed pixel; `paintComponent` re-walks a component later
@@ -132,7 +196,7 @@ export function computeRunLengths(ink, width, height, hRun, vRun) {
  *
  * `visited` is marked 1 for every ink pixel reached here.
  */
-export function labelComponents(ink, width, height, colored, hRun, vRun, visited, stack) {
+export function labelComponents(ink, width, height, colored, hRun, vRun, dist, visited, stack) {
   visited.fill(0);
   const stats = [];
   const n = width * height;
@@ -153,6 +217,9 @@ export function labelComponents(ink, width, height, colored, hRun, vRun, visited
     let coloredCount = 0;
     let maxHRun = 0;
     let maxVRun = 0;
+    let ridgeCount = 0;
+    let ridgeSum = 0;
+    let ridgeSumSq = 0;
 
     while (sp > 0) {
       const idx = stack[--sp];
@@ -163,6 +230,21 @@ export function labelComponents(ink, width, height, colored, hRun, vRun, visited
       if (colored[idx] !== 0) coloredCount++;
       if (hRun[idx] > maxHRun) maxHRun = hRun[idx];
       if (vRun[idx] > maxVRun) maxVRun = vRun[idx];
+
+      // Ridge pixels (local maxima of the distance transform) sit at the
+      // centre of the stroke, so their value tracks the local half-width.
+      const dv = dist[idx];
+      if (
+        dv > 0 &&
+        (x === 0 || dist[idx - 1] <= dv) &&
+        (x === width - 1 || dist[idx + 1] <= dv) &&
+        (y === 0 || dist[idx - width] <= dv) &&
+        (y === height - 1 || dist[idx + width] <= dv)
+      ) {
+        ridgeCount++;
+        ridgeSum += dv;
+        ridgeSumSq += dv * dv;
+      }
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
@@ -208,6 +290,9 @@ export function labelComponents(ink, width, height, colored, hRun, vRun, visited
       coloredCount,
       maxHRun,
       maxVRun,
+      ridgeCount,
+      ridgeSum,
+      ridgeSumSq,
     });
   }
 
@@ -266,17 +351,25 @@ export function paintComponent(seed, width, height, visited, stack, out) {
  * Returns the number of pixels added.
  */
 export function expandMaskThroughNonBackground(
-  mask, gray, width, height, bgThreshold, maxDepth, state, queue
+  mask, gray, width, height, bgThreshold, maxDepth, state, queue, region = null
 ) {
   let head = 0;
   let tail = 0;
-  const n = width * height;
-  for (let i = 0; i < n; i++) {
-    if (mask[i] !== 0) {
-      state[i] = 1;
-      queue[tail++] = i;
-    } else {
-      state[i] = 0;
+  const rx0 = region ? region.x0 : 0;
+  const ry0 = region ? region.y0 : 0;
+  const rx1 = region ? region.x1 : width - 1;
+  const ry1 = region ? region.y1 : height - 1;
+
+  for (let y = ry0; y <= ry1; y++) {
+    const row = y * width;
+    for (let x = rx0; x <= rx1; x++) {
+      const i = row + x;
+      if (mask[i] !== 0) {
+        state[i] = 1;
+        queue[tail++] = i;
+      } else {
+        state[i] = 0;
+      }
     }
   }
   if (tail === 0) return 0;
@@ -315,33 +408,38 @@ export function expandMaskThroughNonBackground(
  * naive neighbourhood scan. At radius 3 that is ~49 reads per pixel down to
  * a couple of counter updates.
  */
-export function dilateBinary(src, width, height, radius, tmp, dst) {
-  for (let y = 0; y < height; y++) {
+export function dilateBinary(src, width, height, radius, tmp, dst, region = null) {
+  const rx0 = region ? region.x0 : 0;
+  const ry0 = region ? region.y0 : 0;
+  const rx1 = region ? region.x1 : width - 1;
+  const ry1 = region ? region.y1 : height - 1;
+
+  for (let y = ry0; y <= ry1; y++) {
     const row = y * width;
     let count = 0;
-    for (let x = 0; x <= radius && x < width; x++) {
+    for (let x = rx0; x <= rx0 + radius && x <= rx1; x++) {
       if (src[row + x] !== 0) count++;
     }
-    for (let x = 0; x < width; x++) {
+    for (let x = rx0; x <= rx1; x++) {
       tmp[row + x] = count > 0 ? 1 : 0;
       const add = x + radius + 1;
       const rem = x - radius;
-      if (add < width && src[row + add] !== 0) count++;
-      if (rem >= 0 && src[row + rem] !== 0) count--;
+      if (add <= rx1 && src[row + add] !== 0) count++;
+      if (rem >= rx0 && src[row + rem] !== 0) count--;
     }
   }
 
-  for (let x = 0; x < width; x++) {
+  for (let x = rx0; x <= rx1; x++) {
     let count = 0;
-    for (let y = 0; y <= radius && y < height; y++) {
+    for (let y = ry0; y <= ry0 + radius && y <= ry1; y++) {
       if (tmp[y * width + x] !== 0) count++;
     }
-    for (let y = 0; y < height; y++) {
+    for (let y = ry0; y <= ry1; y++) {
       dst[y * width + x] = count > 0 ? 255 : 0;
       const add = y + radius + 1;
       const rem = y - radius;
-      if (add < height && tmp[add * width + x] !== 0) count++;
-      if (rem >= 0 && tmp[rem * width + x] !== 0) count--;
+      if (add <= ry1 && tmp[add * width + x] !== 0) count++;
+      if (rem >= ry0 && tmp[rem * width + x] !== 0) count--;
     }
   }
 }
@@ -358,15 +456,23 @@ export function dilateBinary(src, width, height, radius, tmp, dst) {
  *
  * `rgba` is modified in place.
  */
-export function inpaintMasked(rgba, mask, n, width, height, state, queue, background = null) {
+export function inpaintMasked(rgba, mask, n, width, height, state, queue, background = null, region = null) {
   const UNKNOWN = 1;
   const QUEUED = 2;
+  const rx0 = region ? region.x0 : 0;
+  const ry0 = region ? region.y0 : 0;
+  const rx1 = region ? region.x1 : width - 1;
+  const ry1 = region ? region.y1 : height - 1;
 
   let unknownCount = 0;
-  for (let i = 0; i < n; i++) {
-    const u = mask[i] !== 0 ? UNKNOWN : 0;
-    state[i] = u;
-    unknownCount += u;
+  for (let y = ry0; y <= ry1; y++) {
+    const row = y * width;
+    for (let x = rx0; x <= rx1; x++) {
+      const i = row + x;
+      const u = mask[i] !== 0 ? UNKNOWN : 0;
+      state[i] = u;
+      unknownCount += u;
+    }
   }
   if (unknownCount === 0) return 0;
 
@@ -374,9 +480,9 @@ export function inpaintMasked(rgba, mask, n, width, height, state, queue, backgr
   let tail = 0;
 
   // Seed the frontier: masked pixels that touch at least one known pixel.
-  for (let y = 0; y < height; y++) {
+  for (let y = ry0; y <= ry1; y++) {
     const row = y * width;
-    for (let x = 0; x < width; x++) {
+    for (let x = rx0; x <= rx1; x++) {
       const i = row + x;
       if (state[i] !== UNKNOWN) continue;
       let touchesKnown = false;

@@ -31,6 +31,7 @@ import {
   otsuFromHistogram,
   thresholdInk,
   computeRunLengths,
+  chamferDistanceTransform,
   labelComponents,
   paintComponent,
   expandMaskThroughNonBackground,
@@ -65,6 +66,11 @@ export const DEFAULTS = {
   // much of its own bounding box, is a printed rule / table border.
   straightRunMin: 30,
   straightRunFraction: 0.55,
+  // Stroke-width CV below which a mark is taken to be machine-drawn.
+  // Printed shapes measured up to 0.23; the margin above that is small
+  // because thin strokes carry real quantisation noise in this measure.
+  strokeCvThreshold: 0.28,
+  minRidgeSamples: 8,
   // Ink covering more than this share of the page means the "page" is
   // mostly dark (a photo, an inverted scan); the printed/handwritten
   // distinction is meaningless there, so detection is skipped.
@@ -94,7 +100,31 @@ export function componentFeatures(comp) {
   const extent = comp.area / (comp.w * comp.h);
   const circularity = comp.boundary > 0 ? (4 * Math.PI * comp.area) / (comp.boundary * comp.boundary) : 1;
   const coloredFraction = comp.area > 0 ? comp.coloredCount / comp.area : 0;
-  return { extent, circularity, coloredFraction };
+
+  // Coefficient of variation of the stroke half-width sampled along the
+  // component's ridge.
+  let strokeCv = 0;
+  if (comp.ridgeCount > 0) {
+    const mean = comp.ridgeSum / comp.ridgeCount;
+    const variance = Math.max(comp.ridgeSumSq / comp.ridgeCount - mean * mean, 0);
+    strokeCv = mean > 0 ? Math.sqrt(variance) / mean : 0;
+  }
+  return { extent, circularity, coloredFraction, strokeCv, ridgeCount: comp.ridgeCount || 0 };
+}
+
+/**
+ * True for machine-drawn artwork - diagram boxes, circles, arrows, chart
+ * axes, plot lines.
+ *
+ * These are as sparse and as loopy as handwriting, so the shape tests alone
+ * cannot tell them apart; what separates them is that a drawing program lays
+ * down one constant stroke width, while a pen varies with pressure and
+ * speed. Measured over rendered fixtures, printed shapes top out at 0.23
+ * stroke-width CV (median 0.05) against a 0.49 median for pen strokes.
+ */
+export function hasUniformStroke(comp, opts = DEFAULTS) {
+  const { strokeCv, ridgeCount } = componentFeatures(comp);
+  return ridgeCount >= opts.minRidgeSamples && strokeCv < opts.strokeCvThreshold;
 }
 
 /**
@@ -114,22 +144,40 @@ export function isPrintedRule(comp, opts = DEFAULTS) {
 export function isHandwriting(comp, opts = DEFAULTS) {
   if (comp.area < opts.minComponentArea) return false;
 
-  // Document structure is never treated as handwriting. Checked first
-  // because table frames are large sparse shapes that every test below
-  // would otherwise flag.
+  const { extent, circularity, coloredFraction } = componentFeatures(comp);
+  const uniform = hasUniformStroke(comp, opts);
+
+  // Ink in a colour the printing does not use is the strongest signal there
+  // is, so it is tested before the structural vetoes below - a coloured pen
+  // mark is not a table border, however straight a fragment of it looks.
+  // Printed coloured headings still survive: they are compact glyphs drawn
+  // at one uniform width.
+  if (coloredFraction >= opts.coloredFraction) {
+    // Still has to be shaped like a stroke rather than a glyph, or a printed
+    // heading in a spot colour would be erased: either clearly meandering,
+    // or sparse and drawn at a varying width.
+    const strokeLike =
+      circularity < opts.circularityThreshold ||
+      (extent < opts.extentThreshold && !uniform);
+    if (strokeLike) return true;
+  }
+
+  // Document structure is never handwriting. Checked before the shape tests
+  // because table frames are large sparse shapes that would otherwise be
+  // flagged by every one of them.
   if (isPrintedRule(comp, opts)) return false;
 
-  const { extent, circularity, coloredFraction } = componentFeatures(comp);
+  // Everything below distinguishes marks by shape alone, and diagrams,
+  // charts and geometric artwork are shaped exactly like pen strokes. Only
+  // the stroke-width test tells them apart, so it gates both rules.
+  if (uniform) return false;
+
   const sparseMinArea = opts.sparseMinArea != null
     ? opts.sparseMinArea
     : opts.sparseMinAreaFloor;
 
   if (extent < opts.sparseExtentThreshold && comp.area >= sparseMinArea) return true;
   if (extent < opts.extentThreshold && circularity < opts.circularityThreshold) return true;
-
-  // Colored ink shaped like a stroke rather than a glyph. Printed colored
-  // headings are compact (circularity ~0.25-0.55), so they survive.
-  if (coloredFraction >= opts.coloredFraction && circularity < opts.circularityThreshold) return true;
 
   return false;
 }
@@ -140,7 +188,7 @@ export function isHandwriting(comp, opts = DEFAULTS) {
  */
 export function createProcessor() {
   let cap = 0;
-  let gray, colored, ink, visited, hwMask, tmp, dilated, scratch32, hRun, vRun;
+  let gray, colored, ink, visited, hwMask, tmp, dilated, scratch32, hRun, vRun, dist;
   const hist = new Uint32Array(256);
 
   function ensure(n) {
@@ -155,6 +203,7 @@ export function createProcessor() {
     scratch32 = new Int32Array(n);
     hRun = new Uint16Array(n);
     vRun = new Uint16Array(n);
+    dist = new Uint16Array(n);
     cap = n;
   }
 
@@ -181,18 +230,39 @@ export function createProcessor() {
     if (inkCount === 0 || inkCount > n * opts.maxInkFraction) return empty;
 
     computeRunLengths(ink, width, height, hRun, vRun);
-    const stats = labelComponents(ink, width, height, colored, hRun, vRun, visited, scratch32);
+    chamferDistanceTransform(ink, width, height, dist);
+    const stats = labelComponents(ink, width, height, colored, hRun, vRun, dist, visited, scratch32);
 
     hwMask.fill(0, 0, n);
     let flagged = 0;
     let maskedPixels = 0;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
     for (const comp of stats) {
       if (!isHandwriting(comp, opts)) continue;
       maskedPixels += paintComponent(comp.seed, width, height, visited, scratch32, hwMask);
       flagged++;
+      if (comp.x < minX) minX = comp.x;
+      if (comp.y < minY) minY = comp.y;
+      if (comp.x + comp.w - 1 > maxX) maxX = comp.x + comp.w - 1;
+      if (comp.y + comp.h - 1 > maxY) maxY = comp.y + comp.h - 1;
     }
 
     if (flagged === 0) return { ...empty, components: stats.length };
+
+    // Everything from here on only has to look at the marks themselves plus
+    // the margin they can grow into. Handwriting covers a small part of a
+    // page, so bounding this is the difference between the erase stage
+    // costing a few milliseconds and costing more than detection did.
+    const pad = opts.haloDepth + opts.dilateRadius + 4;
+    const region = {
+      x0: Math.max(0, minX - pad),
+      y0: Math.max(0, minY - pad),
+      x1: Math.min(width - 1, maxX + pad),
+      y1: Math.min(height - 1, maxY + pad),
+    };
 
     // Follow each stroke's anti-aliasing/compression halo out to clean
     // paper. The page background is the dominant gray level, so anything
@@ -207,7 +277,7 @@ export function createProcessor() {
     }
     const bgThreshold = Math.max(otsu + 1, mode - opts.backgroundMargin);
     maskedPixels += expandMaskThroughNonBackground(
-      hwMask, gray, width, height, bgThreshold, opts.haloDepth, visited, scratch32
+      hwMask, gray, width, height, bgThreshold, opts.haloDepth, visited, scratch32, region
     );
 
     // Average colour of the paper itself, so erased areas can be filled
@@ -217,7 +287,9 @@ export function createProcessor() {
     let bgB = 0;
     let bgCount = 0;
     const paperLevel = Math.max(0, mode - 2);
-    for (let i = 0; i < n; i++) {
+    // Every 7th pixel is plenty to average a page's paper colour, and a
+    // stride keeps this off the critical path.
+    for (let i = 0; i < n; i += 7) {
       if (gray[i] < paperLevel) continue;
       const o = i * 4;
       bgR += rgba[o];
@@ -237,9 +309,9 @@ export function createProcessor() {
     // Keep a copy of what will actually be erased, for the preview.
     const maskCopy = wantMask ? hwMask.slice(0, n) : null;
 
-    dilateBinary(hwMask, width, height, opts.dilateRadius, tmp, dilated);
+    dilateBinary(hwMask, width, height, opts.dilateRadius, tmp, dilated, region);
     // `visited` is finished with by now, so it doubles as the BFS state map.
-    inpaintMasked(rgba, dilated, n, width, height, visited, scratch32, background);
+    inpaintMasked(rgba, dilated, n, width, height, visited, scratch32, background, region);
 
     return { maskedPixels, components: stats.length, flagged, mask: maskCopy };
   }
